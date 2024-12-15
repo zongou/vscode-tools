@@ -1,0 +1,123 @@
+#!/bin/sh
+set -eu
+
+msg() { printf '%s\n' "$*" >&2; }
+
+dl2stdout() {
+	if command -v curl >/dev/null; then
+		curl -Lk --progress-bar "$@"
+	elif command -v wget >/dev/null; then
+		wget -O- -q "$@"
+	else
+		msg "Cannot find curl or wget"
+		exit 1
+	fi
+}
+
+## Download VS Code Cli
+CLI_DATA_DIR="${HOME}/.vscode"
+if [ ! -f "${CLI_DATA_DIR}/code" ]; then
+	mkdir -p "${CLI_DATA_DIR}"
+	case $(uname -m) in
+	aarch64 | arm64) VSCODE_ARCH=arm64 ;;
+	x86_64) VSCODE_ARCH=x64 ;;
+	*)
+		msg "Unsupported architecture"
+		exit 1
+		;;
+	esac
+
+	PLATFORM=cli-alpine-${VSCODE_ARCH}
+	QUALITY=stable
+	URL=https://update.code.visualstudio.com/latest/${PLATFORM}/${QUALITY}
+
+	msg "Downloading VS Code Cli"
+	dl2stdout "${URL}" | gzip -d | tar -x -C "${CLI_DATA_DIR}"
+fi
+
+## Check if the script is being traced And is on Android, if so then Run with PRoot
+if [ -d "/system" ] && [ ! "$(grep -F 'TracerPid:' /proc/self/status | awk '{print $2}')" -ne 0 ]; then
+	ROOTFS_DIR="${CLI_DATA_DIR}/pmusl"
+	mkdir -p "${ROOTFS_DIR}"
+	mkdir -p "${ROOTFS_DIR}/etc"
+
+	## Prepare musl-c rootfs
+	ALPINE_ARCH=$(uname -m)
+
+	if [ ! -f "${ROOTFS_DIR}/lib/ld-musl-${ALPINE_ARCH}.so.1" ]; then
+		msg "Downloading musl"
+		dl2stdout "http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/musl-1.2.5-r9.apk" | gzip -d | tar -x -C "${ROOTFS_DIR}" lib 2>/dev/null
+	fi
+
+	if [ ! -f "${ROOTFS_DIR}/usr/lib/libgcc_s.so.1" ]; then
+		msg "Downloading libgcc"
+		dl2stdout "http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/libgcc-14.2.0-r5.apk" | gzip -d | tar -x -C "${ROOTFS_DIR}" usr 2>/dev/null
+	fi
+
+	if [ ! -f "${ROOTFS_DIR}/usr/lib/libstdc++.so.6" ]; then
+		msg "Downloading libstdc++"
+		dl2stdout "http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/libstdc++-14.2.0-r5.apk" | gzip -d | tar -x -C "${ROOTFS_DIR}" usr 2>/dev/null
+	fi
+
+	if [ ! -d "${ROOTFS_DIR}/etc/ssl" ]; then
+		msg "Downloading ca-certificates-bundle"
+		dl2stdout "http://dl-cdn.alpinelinux.org/alpine/edge/main/${ALPINE_ARCH}/ca-certificates-bundle-20241121-r1.apk" | gzip -d | tar -x -C "${ROOTFS_DIR}" etc/ssl 2>/dev/null
+	fi
+
+	if [ ! -f "${ROOTFS_DIR}/ect/resolv.conf" ]; then
+		cat <<EOF >"${ROOTFS_DIR}/etc/resolv.conf"
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+EOF
+	fi
+
+	if [ ! -f "${ROOTFS_DIR}/etc/hosts" ]; then
+		cat <<EOF >"${ROOTFS_DIR}/etc/hosts"
+127.0.0.1 localhost
+::1 localhost ip6-localhost ip6-loopback
+ff02::1 ip6-allnodes
+ff02::2 ip6-allrouters
+EOF
+	fi
+
+	if [ ! -f "${ROOTFS_DIR}/etc/passwd" ]; then
+		cat <<EOF >"${ROOTFS_DIR}/etc/passwd"
+root:x:0:0:root:/root:/bin/sh
+bin:x:1:1:bin:/bin:/sbin/nologin
+daemon:x:2:2:daemon:/sbin:/sbin/nologin
+lp:x:4:7:lp:/var/spool/lpd:/sbin/nologin
+sync:x:5:0:sync:/sbin:/bin/sync
+shutdown:x:6:0:shutdown:/sbin:/sbin/shutdown
+halt:x:7:0:halt:/sbin:/sbin/halt
+mail:x:8:12:mail:/var/mail:/sbin/nologin
+news:x:9:13:news:/usr/lib/news:/sbin/nologin
+uucp:x:10:14:uucp:/var/spool/uucppublic:/sbin/nologin
+cron:x:16:16:cron:/var/spool/cron:/sbin/nologin
+ftp:x:21:21::/var/lib/ftp:/sbin/nologin
+sshd:x:22:22:sshd:/dev/null:/sbin/nologin
+games:x:35:35:games:/usr/games:/sbin/nologin
+ntp:x:123:123:NTP:/var/empty:/sbin/nologin
+guest:x:405:100:guest:/dev/null:/sbin/nologin
+nobody:x:65534:65534:nobody:/:/sbin/nologin
+user:x:1000:1000:Linux User,,,:/home/user:/bin/bash
+EOF
+	fi
+
+	unset LD_PRELOAD
+	export PROOT_TMP_DIR="${TMPDIR}"
+	exec proot \
+		--change-id=1000:1000 \
+		--kill-on-exit \
+		--bind="${ROOTFS_DIR}/etc/resolv.conf:/etc/resolv.conf" \
+		--bind="${ROOTFS_DIR}/etc/hosts:/etc/hosts" \
+		--bind="${ROOTFS_DIR}/etc/passwd:/etc/passwd" \
+		--bind="${ROOTFS_DIR}/etc/ssl:/etc/ssl" \
+		--bind="${ROOTFS_DIR}/lib:/lib" \
+		--bind="${ROOTFS_DIR}/usr:/usr" \
+		--bind=/system/bin/env:/usr/bin/env \
+		--bind=/system/bin/sh:/bin/sh \
+		"${CLI_DATA_DIR}/code" \
+		"$@"
+else
+	exec "${CLI_DATA_DIR}/code" "$@"
+fi
