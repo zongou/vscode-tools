@@ -4,6 +4,7 @@ set -eu
 msg() { printf '%s\n' "$*" >&2; }
 
 commitId=$(awk -F'"' '{print $2}' "${HOME}/.vscode/cli/serve-web/lru.json" | head -n 1)
+msg "Patching: commitId=${commitId}"
 cd "${HOME}/.vscode/cli/serve-web/${commitId}/out/vs/code/browser/workbench"
 
 js="workbench.js"
