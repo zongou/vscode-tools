@@ -33,4 +33,5 @@ if [ -f /etc/alpine-release ]; then
     apk add libstdc++
 fi
 
+# xdg-open http://localhost:8000
 ./code serve-web --without-connection-token --host ::0
